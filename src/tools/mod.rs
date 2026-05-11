@@ -170,6 +170,36 @@ pub fn filesystem_tools() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunction {
+                name: "run_command",
+                description: "Execute a single program inside the workspace and return its stdout, stderr, and exit code. PREFER this tool over write_file/create_dir for scaffolding (`flutter create`, `cargo new`, `npm init`, `git init`, …) and for build/test (`cargo test`, `npm run build`, `flutter pub get`) — never hand-write project files when a real command exists. Args are passed verbatim — there is NO shell, so no piping, redirects, &&, or globbing. Requires user approval. 30-second timeout by default.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Binary name or absolute path. Examples: `flutter`, `cargo`, `npm`, `git`, `python3`. NOT a shell snippet."
+                        },
+                        "args": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Arguments passed to the binary. Each element becomes one argv entry. Example for `flutter create demo`: command=`flutter`, args=[`create`, `demo`]."
+                        },
+                        "timeout_secs": {
+                            "type": "integer",
+                            "description": "Optional cap on runtime, in seconds. Default 30; hard ceiling 300."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Short human-readable explanation shown on the approval card so the user understands WHY this command runs. One sentence."
+                        }
+                    },
+                    "required": ["command", "args"]
+                }),
+            },
+        },
     ]
 }
 
@@ -199,19 +229,22 @@ Use the tools directly.\n\
 calling a tool. Just call it. The runtime asks the human for explicit \
 permission on mutating calls (`write_file`, `append_file`, `delete_path`, \
 `move_path`, `create_dir`); you do not need to.\n\
-4. You do NOT have a shell. There is no `run_command`, no `exec`, no way \
-to invoke `cargo`, `flutter`, `npm`, `git`, or any other CLI. If a task \
-genuinely requires running such a command (e.g. `flutter create demo`, \
-`cargo new demo`, `npm init`), do NOT try to fake it by hand-writing \
-project files — that produces broken scaffolds. Instead, reply in prose: \
-state which command the user should run themselves, explain why you can't, \
-and offer to take over once they have the project on disk.\n\
-5. Compose multiple tool calls when needed. Example — adding a simple \
-file to an existing crate is:\n\
-   - `read_file` with `{\"path\": \"Cargo.toml\"}` to inspect what's there\n\
-   - `write_file` to create the new source file.\n\
-6. All path arguments are RELATIVE to the workspace root. Use `.` for the \
-root itself. Do not include the absolute path the runtime mentions below.\n\
+4. For scaffolding, building, testing, version control, and any other task \
+that has a real CLI command, USE `run_command` — do NOT try to hand-write \
+project files. Examples (issue one tool call per turn):\n\
+   - Rust crate: `run_command` with `{\"command\": \"cargo\", \"args\": [\"new\", \"demo\"], \"description\": \"scaffold a Rust crate named demo\"}`. Do NOT manually write Cargo.toml + src/main.rs; `cargo new` does it correctly.\n\
+   - Flutter app: `run_command` with `{\"command\": \"flutter\", \"args\": [\"create\", \"demo\"], \"description\": \"scaffold a Flutter app named demo\"}`.\n\
+   - Node project: `run_command` with `{\"command\": \"npm\", \"args\": [\"init\", \"-y\"]}`.\n\
+   - Git: `run_command` with `{\"command\": \"git\", \"args\": [\"init\"]}`.\n\
+   - Build/test: `run_command` with `{\"command\": \"cargo\", \"args\": [\"build\"]}` or `{\"command\": \"npm\", \"args\": [\"run\", \"build\"]}`.\n\
+   Reach for `write_file` / `create_dir` only for files the user explicitly asks you to create or edit, or when no CLI exists.\n\
+5. `run_command` is NOT a shell. You cannot use `|`, `&&`, `;`, `>`, or \
+globs. Pass the binary as `command` and EACH argument as a separate \
+element of `args`. To run two things, issue two separate tool calls in \
+successive turns.\n\
+6. All path arguments to FS tools are RELATIVE to the workspace root. Use \
+`.` for the root itself. Do not include the absolute path the runtime \
+mentions below.\n\
 7. After the runtime returns a tool result, decide whether more calls are \
 needed. When you have nothing left to do, reply to the user in plain prose \
 summarizing what you did.\n\n",
