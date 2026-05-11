@@ -141,6 +141,35 @@ pub fn filesystem_tools() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunction {
+                name: "search",
+                description: "Search file contents under the workspace for a substring or simple pattern. Returns up to `max_results` matching lines with their paths and line numbers. Case-sensitive by default.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Plain-text substring to search for. Not a regex."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional workspace-relative subdirectory to scope the search. Defaults to the workspace root."
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Cap on returned matches. Default 100; hard ceiling 1000."
+                        },
+                        "case_insensitive": {
+                            "type": "boolean",
+                            "description": "If true, fold case before comparing. Default false."
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
     ]
 }
 

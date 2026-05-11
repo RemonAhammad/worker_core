@@ -32,8 +32,6 @@ async fn chat(
         return Err(AppError::BadRequest("max_tokens must be > 0".into()));
     }
 
-    let engine = state.engine.current().await;
-
     // Pick up the most recent session, or create one. We deliberately do
     // not maintain a separate "current session" pointer — `updated_at` on
     // sessions is already the source of truth, and using it keeps `/v1/chat`
@@ -41,6 +39,7 @@ async fn chat(
     let session = match sess_db::most_recent(&state.db).await? {
         Some(s) => s,
         None => {
+            let engine = state.engine.current().await;
             sess_db::create(
                 &state.db,
                 "chat",
@@ -50,6 +49,10 @@ async fn chat(
             .await?
         }
     };
+
+    // Respect any per-session model pin before snapshotting the engine.
+    crate::api::models::ensure_model_loaded(&state, &session.model_name).await?;
+    let engine = state.engine.current().await;
 
     let user_token_count = engine.count_tokens(&req.content).await? as i64;
     msg_db::insert(

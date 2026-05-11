@@ -55,6 +55,21 @@ pub struct GenerateOpts {
     pub stop_sequences: Vec<String>,
 }
 
+/// Events produced by `generate_streaming`. The receiver reads tokens as
+/// they're sampled and a final `Done` event with the cumulative usage.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    Token(String),
+    Done {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        /// Full generated text (concatenation of all `Token`s). Convenience
+        /// so callers don't have to buffer themselves.
+        text: String,
+    },
+    Error(String),
+}
+
 #[async_trait]
 pub trait InferenceBackend: Send + Sync + 'static {
     fn model_name(&self) -> &str;
@@ -80,6 +95,36 @@ pub trait InferenceBackend: Send + Sync + 'static {
         temperature: f32,
         opts: GenerateOpts,
     ) -> Result<Generated, AppError>;
+
+    /// Stream tokens as they're produced. The default implementation runs
+    /// `generate_with` and emits a single `Token` followed by `Done`, so
+    /// stubs and remote backends work without a real streaming path.
+    async fn generate_streaming(
+        &self,
+        turns: &[ChatTurn],
+        max_tokens: u32,
+        temperature: f32,
+        opts: GenerateOpts,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>, AppError> {
+        let g = self.generate_with(turns, max_tokens, temperature, opts).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let text = g.text.clone();
+        let prompt = g.prompt_tokens;
+        let completion = g.completion_tokens;
+        tokio::spawn(async move {
+            if !text.is_empty() {
+                let _ = tx.send(StreamEvent::Token(text.clone())).await;
+            }
+            let _ = tx
+                .send(StreamEvent::Done {
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    text,
+                })
+                .await;
+        });
+        Ok(rx)
+    }
 }
 
 /// Real backend powered by llama.cpp.
@@ -192,13 +237,56 @@ impl InferenceBackend for LlamaEngine {
         let turns: Vec<ChatTurn> = turns.to_vec();
         tokio::task::spawn_blocking(move || -> Result<Generated, AppError> {
             let guard = inner.lock().expect("engine mutex poisoned");
-            run_generation(&guard, &turns, max_tokens, temperature, context_length, &opts)
+            run_generation(&guard, &turns, max_tokens, temperature, context_length, &opts, None)
         })
         .await
         .map_err(|e| AppError::Internal(format!("join error: {e}")))?
     }
+
+    async fn generate_streaming(
+        &self,
+        turns: &[ChatTurn],
+        max_tokens: u32,
+        temperature: f32,
+        opts: GenerateOpts,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>, AppError> {
+        // Modest buffer — tokens are small, the consumer keeps up.
+        let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
+        let inner = self.inner.clone();
+        let context_length = self.context_length;
+        let turns: Vec<ChatTurn> = turns.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let result: Result<Generated, AppError> = (|| {
+                let guard = inner.lock().expect("engine mutex poisoned");
+                run_generation(
+                    &guard,
+                    &turns,
+                    max_tokens,
+                    temperature,
+                    context_length,
+                    &opts,
+                    Some(&tx),
+                )
+            })();
+            match result {
+                Ok(g) => {
+                    let _ = tx.blocking_send(StreamEvent::Done {
+                        prompt_tokens: g.prompt_tokens,
+                        completion_tokens: g.completion_tokens,
+                        text: g.text,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(StreamEvent::Error(e.to_string()));
+                }
+            }
+        });
+        Ok(rx)
+    }
 }
 
+// `stream_tx`, when `Some`, receives each generated token piece as it is
+// decoded — used by `generate_streaming` to feed an SSE response.
 fn run_generation(
     inner: &EngineInner,
     turns: &[ChatTurn],
@@ -206,6 +294,7 @@ fn run_generation(
     temperature: f32,
     context_length: u32,
     opts: &GenerateOpts,
+    stream_tx: Option<&tokio::sync::mpsc::Sender<StreamEvent>>,
 ) -> Result<Generated, AppError> {
     let chat: Vec<LlamaChatMessage> = turns
         .iter()
@@ -304,7 +393,13 @@ fn run_generation(
         }
 
         if let Ok(piece) = inner.model.token_to_piece(next, &mut decoder, false, None) {
-            output.push_str(&piece);
+            if !piece.is_empty() {
+                if let Some(tx) = stream_tx {
+                    // Best-effort send; the receiver may have dropped.
+                    let _ = tx.blocking_send(StreamEvent::Token(piece.clone()));
+                }
+                output.push_str(&piece);
+            }
         }
         completion_tokens += 1;
 

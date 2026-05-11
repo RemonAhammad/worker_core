@@ -29,6 +29,35 @@ pub fn router() -> Router<AppState> {
         .route("/v1/models/load", post(load_model))
 }
 
+/// Hot-swap the loaded model so its `model_name()` equals `desired_filename`.
+///
+/// If the model is already loaded this is a no-op. If `desired_filename`
+/// matches a known preset by `filename` we resolve it through the catalog;
+/// otherwise we treat it as a literal local GGUF filename inside
+/// `models_dir`. Returns the filename actually loaded on success.
+///
+/// This is the lazy half of "per-session model pinning": handlers call it
+/// before generation if the session's `model_name` doesn't match what's
+/// currently loaded.
+pub async fn ensure_model_loaded(state: &AppState, desired_filename: &str) -> Result<(), AppError> {
+    let current = state.engine.current().await;
+    if current.model_name() == desired_filename {
+        return Ok(());
+    }
+    drop(current);
+
+    // Resolve filename → preset name so the load handler does the same
+    // download-then-swap path as the UI button.
+    let preset_name = presets::PRESETS
+        .iter()
+        .find(|p| p.filename == desired_filename)
+        .map(|p| p.name.to_string());
+    let name = preset_name.unwrap_or_else(|| desired_filename.to_string());
+    let req = LoadModelRequest { name };
+    let _ = load_model(State(state.clone()), Json(req)).await?;
+    Ok(())
+}
+
 async fn list_models(State(state): State<AppState>) -> Result<Json<ListModelsResponse>, AppError> {
     let entries = downloader::list_local_models(&state.settings.models_dir).await?;
     let engine = state.engine.current().await;

@@ -129,15 +129,15 @@ pub async fn touch(pool: &SqlitePool, id: Uuid) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Patch a session's title and/or system prompt. Returns the updated row.
-/// Either argument can be `None` to leave that column alone. Passing
-/// `Some("")` for `system_prompt` clears it; the empty title case is
-/// validated at the handler layer.
+/// Patch a session's metadata. Returns the updated row. Each argument can
+/// be `None` to leave that column alone. Passing `Some("")` for
+/// `system_prompt` clears it.
 pub async fn update(
     pool: &SqlitePool,
     id: Uuid,
     title: Option<&str>,
     system_prompt: Option<Option<&str>>,
+    model_name: Option<&str>,
 ) -> Result<Session, AppError> {
     let mut sets: Vec<&str> = Vec::new();
     if title.is_some() {
@@ -145,6 +145,9 @@ pub async fn update(
     }
     if system_prompt.is_some() {
         sets.push("system_prompt = ?");
+    }
+    if model_name.is_some() {
+        sets.push("model_name = ?");
     }
     if sets.is_empty() {
         return get(pool, id).await;
@@ -158,6 +161,9 @@ pub async fn update(
     }
     if let Some(sp) = system_prompt {
         q = q.bind(sp);
+    }
+    if let Some(m) = model_name {
+        q = q.bind(m);
     }
     q = q.bind(Utc::now()).bind(id.to_string());
 

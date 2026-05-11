@@ -72,7 +72,9 @@ async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `PATCH /v1/sessions/:id` — update title and/or system prompt.
+/// `PATCH /v1/sessions/:id` — update title, system prompt, and/or model
+/// preference. The model field stores a GGUF filename; the actual engine
+/// swap happens lazily on the next agent/chat call.
 async fn update(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -83,14 +85,13 @@ async fn update(
     {
         return Err(AppError::BadRequest("title cannot be empty".into()));
     }
-    // Convert `Option<String>` → `Option<Option<&str>>` so the db helper can
-    // tell "leave alone" apart from "set to NULL".
     let system_prompt = req.system_prompt.as_ref().map(|s| Some(s.as_str()));
     let session = sess_db::update(
         &state.db,
         id,
         req.title.as_deref().map(str::trim),
         system_prompt,
+        req.model_name.as_deref(),
     )
     .await?;
     Ok(Json(session))

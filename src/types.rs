@@ -176,6 +176,11 @@ pub struct UpdateSessionRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Preferred GGUF filename for this session. When set, message/agent
+    /// handlers will hot-swap the engine to this model on the next send
+    /// if the currently-loaded model differs.
+    #[serde(default)]
+    pub model_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

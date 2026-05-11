@@ -60,6 +60,8 @@ async fn send(
     }
 
     let session = sess_db::get(&state.db, session_id).await?;
+    // Respect any pinned model on this session.
+    crate::api::models::ensure_model_loaded(&state, &session.model_name).await?;
     let engine = state.engine.current().await;
 
     // Persist the new user message before generation so the prompt-builder
@@ -99,6 +101,7 @@ async fn continue_(
     }
 
     let session = sess_db::get(&state.db, session_id).await?;
+    crate::api::models::ensure_model_loaded(&state, &session.model_name).await?;
     let engine = state.engine.current().await;
 
     // Persist each tool result as a tool message so the next prompt
