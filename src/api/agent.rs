@@ -52,6 +52,14 @@ async fn send(
     Path(session_id): Path<Uuid>,
     Json(req): Json<AgentSendRequest>,
 ) -> Result<Json<AgentResponse>, AppError> {
+    tracing::info!(
+        %session_id,
+        workspace_hint = ?req.workspace_hint,
+        content_len = req.content.len(),
+        max_tokens = req.max_tokens,
+        temperature = req.temperature,
+        "AGENT /agent: send"
+    );
     if req.content.trim().is_empty() {
         return Err(AppError::BadRequest("content is required".into()));
     }
@@ -96,6 +104,11 @@ async fn continue_(
     Path(session_id): Path<Uuid>,
     Json(req): Json<AgentContinueRequest>,
 ) -> Result<Json<AgentResponse>, AppError> {
+    tracing::info!(
+        %session_id,
+        n_results = req.results.len(),
+        "AGENT /agent/continue: send"
+    );
     if req.max_tokens == 0 {
         return Err(AppError::BadRequest("max_tokens must be > 0".into()));
     }
@@ -138,25 +151,35 @@ async fn run_turn(
     // Reload the session so we get the freshly-touched updated_at and any
     // history additions from the caller.
     let session = sess_db::get(&state.db, session_id).await?;
+    let _ = base_system_prompt; // session.system_prompt is the source of truth
 
-    // Build the augmented system prompt with the tool catalog. We replace
-    // the session's system prompt for the duration of this turn so the
-    // model is reliably told about the tools even if memory-injection has
-    // displaced it.
+    // The tool catalog goes at the very TOP of the system block (above
+    // memories and the session's own prompt) so the model can't miss it.
     let tools = filesystem_tools();
-    let base = base_system_prompt.clone().unwrap_or_default();
-    let augmented = format!("{}{}", base, render_tool_preamble(&tools, workspace_hint));
-
-    // ContextManager handles memories + trimming. We pass an override
-    // session whose system_prompt is `augmented` so the rendered prompt
-    // includes the tool catalog.
-    let mut session_for_prompt = session.clone();
-    session_for_prompt.system_prompt = Some(augmented);
+    let preamble = render_tool_preamble(&tools, workspace_hint);
 
     let cm = ContextManager::new(&engine, &state.db);
     let turns: Vec<ChatTurn> = cm
-        .build(&session_for_prompt, engine.context_length(), Some(max_tokens))
+        .build_with(
+            &session,
+            engine.context_length(),
+            Some(max_tokens),
+            Some(&preamble),
+        )
         .await?;
+
+    // Dump the prompt fed to the model so we can see exactly what arrives.
+    tracing::info!(
+        n_turns = turns.len(),
+        roles = ?turns.iter().map(|t| t.role.as_str()).collect::<Vec<_>>(),
+        "AGENT: prompt assembled"
+    );
+    if let Some(sys) = turns.iter().find(|t| matches!(t.role, crate::types::Role::System)) {
+        let head = sys.content.chars().take(800).collect::<String>();
+        tracing::info!(system_chars = sys.content.len(), system_head = %head, "AGENT: system message");
+    } else {
+        tracing::warn!("AGENT: NO system message in prompt — model has no tool catalog");
+    }
 
     let started = Instant::now();
     let generated = engine
@@ -176,10 +199,19 @@ async fn run_turn(
         completion_tokens = generated.completion_tokens,
         elapsed_ms = elapsed.as_millis() as u64,
         agent = true,
-        "inference complete"
+        "AGENT: inference complete"
     );
+    // Raw model output, capped for log readability.
+    let head = generated.text.chars().take(1200).collect::<String>();
+    tracing::info!(raw_chars = generated.text.len(), raw_head = %head, "AGENT: raw model output");
 
     let outcome = tools::parser::parse(&generated.text);
+    tracing::info!(
+        n_tool_calls = outcome.tool_calls.len(),
+        tool_names = ?outcome.tool_calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        prose_len = outcome.prose.len(),
+        "AGENT: parsed outcome"
+    );
 
     let usage = Usage {
         prompt_tokens: generated.prompt_tokens,

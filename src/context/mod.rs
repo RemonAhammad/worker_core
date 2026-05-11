@@ -39,16 +39,40 @@ impl<'a> ContextManager<'a> {
         context_length: u32,
         response_budget: Option<u32>,
     ) -> Result<Vec<ChatTurn>, AppError> {
+        self.build_with(session, context_length, response_budget, None).await
+    }
+
+    /// Like [`build`] but lets the caller inject text at the very TOP of
+    /// the system block, ahead of memories and the session's own prompt.
+    /// The agent endpoint uses this to plant the tool catalog where the
+    /// model is most likely to honor it.
+    pub async fn build_with(
+        &self,
+        session: &Session,
+        context_length: u32,
+        response_budget: Option<u32>,
+        system_prefix: Option<&str>,
+    ) -> Result<Vec<ChatTurn>, AppError> {
         let response_budget = response_budget.unwrap_or(DEFAULT_RESPONSE_BUDGET);
         let budget = context_length.saturating_sub(response_budget) as i64;
 
         let history = msg_db::list_for_session(self.pool, session.id).await?;
 
-        // Build the effective system prompt: long-term memories (if any) +
-        // the session's configured system prompt. Memories come first so the
-        // session prompt can refine or override them.
+        // Build the effective system prompt: an optional prefix (tools,
+        // injected by the agent endpoint) → long-term memories →
+        // the session's configured system prompt. Memories come before the
+        // session prompt so it can refine or override them.
         let memories = mem_db::list(self.pool).await?;
         let mut system_text = String::new();
+        if let Some(prefix) = system_prefix
+            && !prefix.is_empty()
+        {
+            system_text.push_str(prefix);
+            if !system_text.ends_with('\n') {
+                system_text.push('\n');
+            }
+            system_text.push('\n');
+        }
         if !memories.is_empty() {
             system_text.push_str(
                 "The following facts about the user persist across all conversations. Honor them in every reply:\n",

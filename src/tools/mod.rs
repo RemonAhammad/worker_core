@@ -174,26 +174,65 @@ pub fn filesystem_tools() -> Vec<ToolDefinition> {
 }
 
 /// Render the system prompt addendum that teaches the model about tools.
-/// Caller concatenates this onto the existing session system prompt.
+///
+/// Lives at the **top** of the final system block (above memories and the
+/// session's own system prompt), and is written aggressively to keep weaker
+/// models (e.g. Qwen2.5-Coder-7B) from sliding back into "let me suggest a
+/// shell command" behavior. Concrete examples here matter — the model
+/// pattern-matches them.
 pub fn render_tool_preamble(tools: &[ToolDefinition], workspace_hint: Option<&str>) -> String {
     let mut s = String::new();
-    s.push_str("\n\n# Tools\n\nYou are running as a coding agent with access to the user's workspace via the following functions. Invoke at most one tool per <tool_call> block; the runtime will execute it and return the result to you.\n");
+    s.push_str(
+        "# Filesystem agent mode\n\n\
+You are operating as an autonomous coding agent. The user has granted you \
+direct, runtime access to a workspace on their machine via the tools listed below. \
+The runtime executes each tool you call and returns its result to you on the \
+next turn.\n\n\
+## CRITICAL RULES — follow them exactly\n\n\
+1. When the user asks you to create, modify, read, move, search, or delete \
+files, you MUST use the provided tools. Emit `<tool_call>` blocks; do NOT \
+output shell commands as a response.\n\
+2. NEVER suggest shell commands like `cargo new ...`, `echo ... > file`, \
+`mkdir`, `rm`, or `mv` for the user to run. Those are not how you operate. \
+Use the tools directly.\n\
+3. NEVER ask 'would you like to proceed?' or 'shall I do this?' before \
+calling a tool. Just call it. The runtime asks the human for explicit \
+permission on mutating calls (`write_file`, `append_file`, `delete_path`, \
+`move_path`, `create_dir`); you do not need to.\n\
+4. You do NOT have a shell. There is no `run_command`, no `exec`, no way \
+to invoke `cargo`, `flutter`, `npm`, `git`, or any other CLI. If a task \
+genuinely requires running such a command (e.g. `flutter create demo`, \
+`cargo new demo`, `npm init`), do NOT try to fake it by hand-writing \
+project files — that produces broken scaffolds. Instead, reply in prose: \
+state which command the user should run themselves, explain why you can't, \
+and offer to take over once they have the project on disk.\n\
+5. Compose multiple tool calls when needed. Example — adding a simple \
+file to an existing crate is:\n\
+   - `read_file` with `{\"path\": \"Cargo.toml\"}` to inspect what's there\n\
+   - `write_file` to create the new source file.\n\
+6. All path arguments are RELATIVE to the workspace root. Use `.` for the \
+root itself. Do not include the absolute path the runtime mentions below.\n\
+7. After the runtime returns a tool result, decide whether more calls are \
+needed. When you have nothing left to do, reply to the user in plain prose \
+summarizing what you did.\n\n",
+    );
     if let Some(ws) = workspace_hint {
         s.push_str(&format!(
-            "\nWorkspace root (read-only metadata, all paths are workspace-relative): `{}`\n",
+            "Workspace root (informational only; never include this prefix in tool arguments): `{}`\n\n",
             ws
         ));
     }
-    s.push_str(
-        "\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n",
-    );
+    s.push_str("Function signatures (JSON Schema) within <tools></tools>:\n<tools>\n");
     for t in tools {
         if let Ok(line) = serde_json::to_string(t) {
             s.push_str(&line);
             s.push('\n');
         }
     }
-    s.push_str("</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>\n\nWhen you are done — no further tool calls needed — reply to the user in plain prose.\n");
+    s.push_str(
+        "</tools>\n\nReturn each call as JSON within <tool_call></tool_call>:\n\
+<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>\n",
+    );
     s
 }
 
