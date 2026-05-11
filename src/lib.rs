@@ -10,4 +10,5 @@ pub mod error;
 pub mod memory;
 pub mod model;
 pub mod state;
+pub mod tools;
 pub mod types;

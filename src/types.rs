@@ -178,6 +178,67 @@ pub struct UpdateSessionRequest {
     pub system_prompt: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Agent endpoint — multi-turn tool-call loop.
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /v1/sessions/:id/agent` — starts a new agent turn.
+#[derive(Debug, Deserialize)]
+pub struct AgentSendRequest {
+    pub content: String,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+    /// Workspace root the client is operating in. Informational — the
+    /// backend includes it in the system prompt so the model knows what
+    /// it can touch. Tools execute on the client, so the backend has no
+    /// way to enforce this itself.
+    #[serde(default)]
+    pub workspace_hint: Option<String>,
+}
+
+/// Body of `POST /v1/sessions/:id/agent/continue` — caller returns tool
+/// results from the previous turn so the model can continue.
+#[derive(Debug, Deserialize)]
+pub struct AgentContinueRequest {
+    /// Echoes the `assistant_id` from the previous tool-calls response;
+    /// kept for clarity and future correlation, currently unused.
+    #[serde(default)]
+    pub assistant_id: Option<Uuid>,
+    pub results: Vec<crate::tools::ToolResult>,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+    #[serde(default)]
+    pub workspace_hint: Option<String>,
+}
+
+/// One of two terminal outcomes for an agent turn.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentResponse {
+    /// Model produced a final user-facing message; the loop is over for
+    /// this turn.
+    Message {
+        message: Message,
+        usage: Usage,
+    },
+    /// Model wants to call tool(s). Caller executes them and POSTs the
+    /// results back via `/agent/continue` referencing `assistant_id`.
+    ToolCalls {
+        /// Id of the (partial) assistant message persisted alongside the
+        /// tool call so the next turn can append onto it.
+        assistant_id: Uuid,
+        calls: Vec<crate::tools::ParsedToolCall>,
+        /// Prose the model emitted before the tool call(s); already saved
+        /// as the assistant message content.
+        prose: String,
+        usage: Usage,
+    },
+}
+
 /// A long-term fact that should survive across all sessions. Injected into
 /// every prompt's system block at context-build time.
 #[derive(Debug, Clone, Serialize, Deserialize)]

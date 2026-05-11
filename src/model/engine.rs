@@ -9,6 +9,11 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Bound the substring scan when checking stop sequences. We only need to
+/// see the tail of the running output since any matching sequence will
+/// have its final char(s) at the very end.
+const MAX_STOP_TAIL: usize = 128;
+
 use async_trait::async_trait;
 
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -39,6 +44,17 @@ pub struct Generated {
     pub completion_tokens: u32,
 }
 
+/// Optional parameters for a generation call. Defaults are stable across
+/// callers so we don't have to update every site when adding a new knob.
+#[derive(Debug, Clone, Default)]
+pub struct GenerateOpts {
+    /// If any of these substrings appears in the running output, stop
+    /// generation immediately and return what we have so far. The matched
+    /// stop sequence is included in `Generated.text` — callers strip it
+    /// if they care.
+    pub stop_sequences: Vec<String>,
+}
+
 #[async_trait]
 pub trait InferenceBackend: Send + Sync + 'static {
     fn model_name(&self) -> &str;
@@ -51,6 +67,18 @@ pub trait InferenceBackend: Send + Sync + 'static {
         turns: &[ChatTurn],
         max_tokens: u32,
         temperature: f32,
+    ) -> Result<Generated, AppError> {
+        self.generate_with(turns, max_tokens, temperature, GenerateOpts::default())
+            .await
+    }
+    /// Same as `generate` but with extra options (e.g. stop sequences for
+    /// the agent loop).
+    async fn generate_with(
+        &self,
+        turns: &[ChatTurn],
+        max_tokens: u32,
+        temperature: f32,
+        opts: GenerateOpts,
     ) -> Result<Generated, AppError>;
 }
 
@@ -152,18 +180,19 @@ impl InferenceBackend for LlamaEngine {
         .map_err(|e| AppError::Internal(format!("join error: {e}")))?
     }
 
-    async fn generate(
+    async fn generate_with(
         &self,
         turns: &[ChatTurn],
         max_tokens: u32,
         temperature: f32,
+        opts: GenerateOpts,
     ) -> Result<Generated, AppError> {
         let inner = self.inner.clone();
         let context_length = self.context_length;
         let turns: Vec<ChatTurn> = turns.to_vec();
         tokio::task::spawn_blocking(move || -> Result<Generated, AppError> {
             let guard = inner.lock().expect("engine mutex poisoned");
-            run_generation(&guard, &turns, max_tokens, temperature, context_length)
+            run_generation(&guard, &turns, max_tokens, temperature, context_length, &opts)
         })
         .await
         .map_err(|e| AppError::Internal(format!("join error: {e}")))?
@@ -176,6 +205,7 @@ fn run_generation(
     max_tokens: u32,
     temperature: f32,
     context_length: u32,
+    opts: &GenerateOpts,
 ) -> Result<Generated, AppError> {
     let chat: Vec<LlamaChatMessage> = turns
         .iter()
@@ -264,6 +294,7 @@ fn run_generation(
     // codepoint render correctly across iterations.
     let mut decoder = encoding_rs::UTF_8.new_decoder();
 
+    let mut hit_stop = false;
     while completion_tokens < max_tokens && pos < max_pos {
         let next = sampler.sample(&ctx, -1);
         sampler.accept(next);
@@ -277,6 +308,17 @@ fn run_generation(
         }
         completion_tokens += 1;
 
+        // Cheap O(n*k) substring check; stop sequences are short and few.
+        // We check only the tail to keep the work bounded.
+        if !opts.stop_sequences.is_empty() {
+            let tail_start = output.len().saturating_sub(MAX_STOP_TAIL);
+            let tail = &output[tail_start..];
+            if opts.stop_sequences.iter().any(|s| tail.contains(s.as_str())) {
+                hit_stop = true;
+                break;
+            }
+        }
+
         batch.clear();
         batch
             .add(next, pos, &[0], true)
@@ -285,6 +327,7 @@ fn run_generation(
             .map_err(|e| AppError::Inference(format!("decode token: {e}")))?;
         pos += 1;
     }
+    let _ = hit_stop;
 
     Ok(Generated {
         text: output,
@@ -320,11 +363,12 @@ impl InferenceBackend for StubBackend {
     async fn count_tokens(&self, text: &str) -> Result<usize, AppError> {
         Ok(text.split_whitespace().count().max(1))
     }
-    async fn generate(
+    async fn generate_with(
         &self,
         turns: &[ChatTurn],
         _max_tokens: u32,
         _temperature: f32,
+        _opts: GenerateOpts,
     ) -> Result<Generated, AppError> {
         let last_user = turns
             .iter()

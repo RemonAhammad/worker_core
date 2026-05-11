@@ -13,6 +13,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 
+pub mod agent;
 pub mod chat;
 pub mod health;
 pub mod memories;
@@ -28,6 +29,7 @@ pub fn router(state: AppState) -> Router {
         .merge(messages::router())
         .merge(memories::router())
         .merge(chat::router())
+        .merge(agent::router())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(
