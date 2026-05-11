@@ -1,0 +1,43 @@
+# co_worker_lite — local LLM backend configuration.
+#
+# Copy this file to `config.toml` and edit values to taste. Every field below
+# can also be overridden at runtime via environment variables prefixed with
+# `LLM_BACKEND_`. Nested fields use a double underscore: e.g.
+#   LLM_BACKEND_SERVER__PORT=9090
+#   LLM_BACKEND_MODEL__GPU_LAYERS=0
+#
+# Logging is controlled separately by the standard `RUST_LOG` env var, e.g.
+#   RUST_LOG=info,co_worker_lite=debug
+
+# Directory where downloaded GGUF models are stored.
+models_dir = "./models"
+
+# Optional: pick a curated model preset by name instead of filling in [model].
+# When set, the preset's repo / filename / context_length replace the values
+# below. Run `co_worker_lite --list-presets` to see the catalog.
+# Equivalent CLI flag: `--preset <name>`. CLI wins over this field.
+#
+# model_preset = "qwen-coder-14b"
+
+[server]
+host = "0.0.0.0"
+port = 6969
+
+[model]
+# Hugging Face repository ID.
+repo = "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
+# Filename within the repo to download.
+filename = "qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+# Optional SHA256 hex digest. When set, the downloader verifies the file after
+# download and on every startup. Leave empty to skip verification.
+sha256 = ""
+# Maximum context window the model will use, in tokens.
+context_length = 8192
+# Number of layers to offload to the GPU.
+#   -1 = offload all layers (use GPU as much as possible)
+#    0 = CPU only
+#    N = offload the first N layers
+gpu_layers = -1
+
+[database]
+path = "./data/backend.db"
