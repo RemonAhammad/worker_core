@@ -126,6 +126,58 @@ pub struct ListModelsResponse {
     pub models: Vec<ModelInfo>,
 }
 
+/// Rich model catalog returned by `GET /v1/models/catalog`. Unifies the
+/// curated preset list with whatever is on disk so the UI can render a
+/// single switchable list.
+#[derive(Debug, Serialize)]
+pub struct ModelCatalog {
+    /// Filename of the currently loaded GGUF (matches `entries[i].filename`
+    /// for the loaded entry).
+    pub current: String,
+    pub entries: Vec<ModelCatalogEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelCatalogEntry {
+    /// Stable identifier the caller passes back to `/v1/models/load`.
+    /// For presets this is the preset name (e.g. `qwen-coder-14b`); for
+    /// local-only files it is the filename.
+    pub name: String,
+    #[serde(rename = "kind")]
+    pub kind: ModelKind,
+    pub repo: String,
+    pub filename: String,
+    pub context_length: u32,
+    /// Size of the GGUF on disk if present, `None` if not yet downloaded.
+    pub size_bytes: Option<u64>,
+    pub min_ram_gib: Option<u32>,
+    pub description: Option<String>,
+    pub present: bool,
+    pub loaded: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    Preset,
+    Local,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoadModelRequest {
+    pub name: String,
+}
+
+/// Body for `PATCH /v1/sessions/:id`. Every field is optional; only the
+/// supplied ones are updated.
+#[derive(Debug, Deserialize)]
+pub struct UpdateSessionRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+}
+
 /// A long-term fact that should survive across all sessions. Injected into
 /// every prompt's system block at context-build time.
 #[derive(Debug, Clone, Serialize, Deserialize)]

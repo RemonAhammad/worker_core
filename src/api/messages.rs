@@ -35,7 +35,11 @@ async fn create(
 
     let session = sess_db::get(&state.db, session_id).await?;
 
-    let user_token_count = state.engine.count_tokens(&req.content).await? as i64;
+    // Snapshot the engine once per request so a mid-request hot-swap doesn't
+    // mix tokenization from one model with generation by another.
+    let engine = state.engine.current().await;
+
+    let user_token_count = engine.count_tokens(&req.content).await? as i64;
     msg_db::insert(
         &state.db,
         session_id,
@@ -52,14 +56,13 @@ async fn create(
         tracing::warn!(error = %e, "auto-memory extraction failed");
     }
 
-    let cm = ContextManager::new(&state.engine, &state.db);
+    let cm = ContextManager::new(&engine, &state.db);
     let turns = cm
-        .build(&session, state.engine.context_length(), Some(req.max_tokens))
+        .build(&session, engine.context_length(), Some(req.max_tokens))
         .await?;
 
     let started = Instant::now();
-    let generated = state
-        .engine
+    let generated = engine
         .generate(&turns, req.max_tokens, req.temperature)
         .await?;
     let elapsed = started.elapsed();

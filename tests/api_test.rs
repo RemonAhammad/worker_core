@@ -15,7 +15,7 @@ use co_worker_lite::config::{
 };
 use co_worker_lite::db;
 use co_worker_lite::model::engine::{SharedEngine, StubBackend};
-use co_worker_lite::state::AppState;
+use co_worker_lite::state::{AppState, EngineSlot};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -46,7 +46,8 @@ async fn build_test_app() -> TestApp {
     let state = AppState {
         settings: Arc::new(settings),
         db: pool,
-        engine,
+        engine: EngineSlot::new(engine),
+        llama_backend: None,
     };
     TestApp {
         app: router(state),

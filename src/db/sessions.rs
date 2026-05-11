@@ -128,3 +128,42 @@ pub async fn touch(pool: &SqlitePool, id: Uuid) -> Result<(), AppError> {
         .await?;
     Ok(())
 }
+
+/// Patch a session's title and/or system prompt. Returns the updated row.
+/// Either argument can be `None` to leave that column alone. Passing
+/// `Some("")` for `system_prompt` clears it; the empty title case is
+/// validated at the handler layer.
+pub async fn update(
+    pool: &SqlitePool,
+    id: Uuid,
+    title: Option<&str>,
+    system_prompt: Option<Option<&str>>,
+) -> Result<Session, AppError> {
+    let mut sets: Vec<&str> = Vec::new();
+    if title.is_some() {
+        sets.push("title = ?");
+    }
+    if system_prompt.is_some() {
+        sets.push("system_prompt = ?");
+    }
+    if sets.is_empty() {
+        return get(pool, id).await;
+    }
+    sets.push("updated_at = ?");
+
+    let sql = format!("UPDATE sessions SET {} WHERE id = ?", sets.join(", "));
+    let mut q = sqlx::query(&sql);
+    if let Some(t) = title {
+        q = q.bind(t);
+    }
+    if let Some(sp) = system_prompt {
+        q = q.bind(sp);
+    }
+    q = q.bind(Utc::now()).bind(id.to_string());
+
+    let result = q.execute(pool).await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::SessionNotFound);
+    }
+    get(pool, id).await
+}

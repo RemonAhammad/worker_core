@@ -32,6 +32,8 @@ async fn chat(
         return Err(AppError::BadRequest("max_tokens must be > 0".into()));
     }
 
+    let engine = state.engine.current().await;
+
     // Pick up the most recent session, or create one. We deliberately do
     // not maintain a separate "current session" pointer — `updated_at` on
     // sessions is already the source of truth, and using it keeps `/v1/chat`
@@ -42,14 +44,14 @@ async fn chat(
             sess_db::create(
                 &state.db,
                 "chat",
-                state.engine.model_name(),
+                engine.model_name(),
                 req.system_prompt.as_deref(),
             )
             .await?
         }
     };
 
-    let user_token_count = state.engine.count_tokens(&req.content).await? as i64;
+    let user_token_count = engine.count_tokens(&req.content).await? as i64;
     msg_db::insert(
         &state.db,
         session.id,
@@ -63,14 +65,13 @@ async fn chat(
         tracing::warn!(error = %e, "auto-memory extraction failed");
     }
 
-    let cm = ContextManager::new(&state.engine, &state.db);
+    let cm = ContextManager::new(&engine, &state.db);
     let turns = cm
-        .build(&session, state.engine.context_length(), Some(req.max_tokens))
+        .build(&session, engine.context_length(), Some(req.max_tokens))
         .await?;
 
     let started = Instant::now();
-    let generated = state
-        .engine
+    let generated = engine
         .generate(&turns, req.max_tokens, req.temperature)
         .await?;
     let elapsed = started.elapsed();

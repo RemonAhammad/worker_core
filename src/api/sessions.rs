@@ -13,14 +13,17 @@ use crate::db::{messages as msg_db, sessions as sess_db};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::types::{
-    CreateSessionRequest, DebugContext, DebugTurn, ListSessionsQuery, Session,
-    SessionWithMessages,
+    CreateSessionRequest, DebugContext, DebugTurn, ListSessionsQuery, Session, SessionWithMessages,
+    UpdateSessionRequest,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/sessions", post(create).get(list))
-        .route("/v1/sessions/{id}", get(get_one).delete(delete))
+        .route(
+            "/v1/sessions/{id}",
+            get(get_one).delete(delete).patch(update),
+        )
         .route("/v1/sessions/{id}/debug", get(debug))
 }
 
@@ -31,10 +34,11 @@ async fn create(
     if req.title.trim().is_empty() {
         return Err(AppError::BadRequest("title is required".into()));
     }
+    let engine = state.engine.current().await;
     let session = sess_db::create(
         &state.db,
         req.title.trim(),
-        state.engine.model_name(),
+        engine.model_name(),
         req.system_prompt.as_deref(),
     )
     .await?;
@@ -68,6 +72,30 @@ async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `PATCH /v1/sessions/:id` — update title and/or system prompt.
+async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateSessionRequest>,
+) -> Result<Json<Session>, AppError> {
+    if let Some(title) = req.title.as_deref()
+        && title.trim().is_empty()
+    {
+        return Err(AppError::BadRequest("title cannot be empty".into()));
+    }
+    // Convert `Option<String>` → `Option<Option<&str>>` so the db helper can
+    // tell "leave alone" apart from "set to NULL".
+    let system_prompt = req.system_prompt.as_ref().map(|s| Some(s.as_str()));
+    let session = sess_db::update(
+        &state.db,
+        id,
+        req.title.as_deref().map(str::trim),
+        system_prompt,
+    )
+    .await?;
+    Ok(Json(session))
+}
+
 /// Returns the exact list of chat turns that would be sent to the model for
 /// the next generation call on this session — system prompt, injected
 /// memories, and the trimmed history. Use this to diagnose "the model forgot
@@ -77,16 +105,15 @@ async fn debug(
     Path(id): Path<Uuid>,
 ) -> Result<Json<DebugContext>, AppError> {
     let session = sess_db::get(&state.db, id).await?;
-    let cm = ContextManager::new(&state.engine, &state.db);
-    let turns = cm
-        .build(&session, state.engine.context_length(), None)
-        .await?;
+    let engine = state.engine.current().await;
+    let cm = ContextManager::new(&engine, &state.db);
+    let turns = cm.build(&session, engine.context_length(), None).await?;
 
     let mut prompt_tokens_estimate: u32 = 0;
     let mut debug_turns = Vec::with_capacity(turns.len());
     let mut memories_injected = 0usize;
     for t in &turns {
-        prompt_tokens_estimate += state.engine.count_tokens(&t.content).await? as u32;
+        prompt_tokens_estimate += engine.count_tokens(&t.content).await? as u32;
         if matches!(t.role, crate::types::Role::System) {
             memories_injected = t.content.matches("\n- ").count();
         }
@@ -98,7 +125,7 @@ async fn debug(
 
     Ok(Json(DebugContext {
         session_id: id,
-        context_length: state.engine.context_length(),
+        context_length: engine.context_length(),
         turns: debug_turns,
         prompt_tokens_estimate,
         memories_injected,

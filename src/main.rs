@@ -21,7 +21,7 @@ use co_worker_lite::model::{
     engine::{LlamaEngine, SharedEngine},
     presets,
 };
-use co_worker_lite::state::AppState;
+use co_worker_lite::state::{AppState, EngineSlot};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         LlamaBackend::init().map_err(|e| anyhow::anyhow!("llama backend init failed: {e}"))?,
     );
     let engine = LlamaEngine::load(
-        backend,
+        backend.clone(),
         &resolved.path,
         settings.model.context_length,
         settings.model.gpu_layers,
@@ -117,7 +117,8 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         settings: Arc::new(settings.clone()),
         db: pool.clone(),
-        engine,
+        engine: EngineSlot::new(engine),
+        llama_backend: Some(backend),
     };
 
     let app = api::router(state);

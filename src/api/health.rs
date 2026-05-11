@@ -11,9 +11,10 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
+    let engine = state.engine.current().await;
     Ok(Json(HealthResponse {
         status: "ok",
-        model: state.engine.model_name().to_string(),
+        model: engine.model_name().to_string(),
         loaded: true,
     }))
 }
